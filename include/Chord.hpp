@@ -1,35 +1,51 @@
 #ifndef __CHORD_HPP__
 #define __CHORD_HPP__
-#define CHORD_LENGTH_BIT 3
+#define CHORD_LENGTH_BIT 32
+
+#include <sys/socket.h>
+
+#include "ChordError.hpp"
+#include "MessageHandler.hpp"
 
 typedef struct {
     char *ipaddr;
-    char *hashedId;
+    char *hostname;
+    unsigned int hashedId;
+    
+    int sfd;
+    struct sockaddr *addr;
+    socklen_t len;
 } node;
 
-class Chord {
+class Chord : public ChordError {
 public:
-    Chord();
+    Chord(unsigned int appPort, unsigned int chordPort, char *ipaddr = NULL);
     
-    bool start();
+    bool init();
     char *query(char *key);
     char *getChordMap();
     
-    char *getHashedId();
-    char *getHashedKey(char *key);
+    unsigned int getHashedId();
+    unsigned int getHashedKey(char *key);
     
-    char *sha1Hash(unsigned char *, size_t len);
+    unsigned int getConsistentHash(char *, size_t len);
+    
+    bool join(char *ipaddr = NULL);
     
 private:
-    unsigned int chordBit;
-    char *hashedId;
+    MessageHandler *mhandler;
+    
+    unsigned int hashedId;
+    unsigned int appPort, chordPort;
+    int chordSfd;
     
     char *ipaddr;
-    node *successor;
+    node *successor, *predecessor;
+    unsigned int numServers;
     
+    node *createNode(char *ipaddr);
     node *getSuccessor();
-    
-    bool join();
+    size_t send(node *n, unsigned char *data, size_t len, int flag = 0);
 };
 
 #endif

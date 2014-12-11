@@ -1,7 +1,7 @@
 #ifndef __MESSAGE_HANDLER_HPP__
 #define __MESSAGE_HANDLER_HPP__
 
-#include "../include/MessageTypes.hpp"
+#include "MessageTypes.hpp"
 
 class MessageHandler {
 public:

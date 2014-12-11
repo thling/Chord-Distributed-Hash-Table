@@ -220,11 +220,26 @@ static std::vector<std::string> split(std::string str, char delim = ' ', int max
  *
  * @return  The name of the local host
  */
-static char *getHostname() {
-    char *local_name = new char[128];
-    gethostname(local_name, 128);
-
-    return local_name;
+static char *getHostname(char *ipaddr = NULL) {
+    char *hostname = new char[1024];
+    
+    if (ipaddr == NULL) {
+        gethostname(hostname, 1024);
+    } else {
+        struct sockaddr_in sa;
+        sa.sin_family = AF_INET;
+        inet_pton(sa.sin_family, ipaddr, &sa.sin_addr);
+        
+        int res = getnameinfo((struct sockaddr *) &sa, sizeof(sa), hostname, 1024, NULL, 0, 0);
+        if (res) {
+            std::cerr << "Unable to get the host name of " << ipaddr << ": "
+                      << gai_strerror(res)
+                      << std::endl;
+            return NULL;
+        }
+    }
+    
+    return hostname;
 }
 
 /**
@@ -244,14 +259,18 @@ static char *getComputerName(char *hostname = NULL) {
     return cstr(hname);
 }
 
-static char *getIpAddr() {
+static char *getIpAddr(char *hostname = NULL) {
+    if (hostname == NULL) {
+        hostname = getHostname();
+    }
+    
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof(hints));
     
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     
-    getaddrinfo(getHostname(), "80", &hints, &res);
+    getaddrinfo(hostname, "80", &hints, &res);
     char *result = inet_ntoa(((struct sockaddr_in *) res->ai_addr)->sin_addr);
     char *ret = new char[strlen(result) + 1];
     strcpy(ret, result);

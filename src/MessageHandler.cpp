@@ -13,62 +13,44 @@ unsigned char *MessageHandler::serialize(void *msg) {
     }
     
     unsigned char *ret = NULL;
-    unsigned int size = 0;
     
     switch (this->getType(msg)) {
-        case MTYPE_CHORD_QUERY:
+        case MTYPE_KEY_QUERY:
         {
-            ChordQuery *cquery = (ChordQuery *) msg;
-            if (cquery->fromId == NULL) {
-                dprt << "From ID cannot be empty";
-                return NULL;
-            } else if (cquery->toId == NULL) {
-                dprt << "To ID cannot be empty";
-                return NULL;
-            } else if (cquery->key == NULL) {
-                dprt << "Key cannot be empty";
-                return NULL;
-            }
-            
-            // (4B for type) + (4B for size) + (3 * 160B message digests)
-            size = 488;
-            if (cquery->keyOwner != NULL) size += 160;
-            
-            ret = new unsigned char[size];
-            memcpy(ret, itobc(size), 4);
-            memcpy(ret + 4, itobc(cquery->type), 4);
-            memcpy(ret + 8, cquery->fromId, 160);
-            memcpy(ret + 168, cquery->toId, 160);
-            memcpy(ret + 328, cquery->key, 160);
-            if (cquery->keyOwner != NULL) {
-                memcpy(ret + 488, cquery->keyOwner, 160);
-            }
-            
+            KeyQuery *cquery = (KeyQuery *) msg;
+            ret = new unsigned char[cquery->size];
+            memcpy(ret, itobc(htonl(cquery->type)), 4);
+            memcpy(ret + 4, itobc(htonl(cquery->size)), 4);
+            memcpy(ret + 8, itobc(htonl(cquery->key)), 4);
+            memcpy(ret + 12, cquery->sender, cquery->size - 12);
+            break;
+        }
+        case MTYPE_KEY_QUERY_RESPONSE:
+        {
+            KeyQueryResponse *cqr = (KeyQueryResponse *) msg;
+            ret = new unsigned char[cqr->size];
+            memcpy(ret, itobc(htonl(cqr->type)), 4);
+            memcpy(ret + 4, itobc(htonl(cqr->size)), 4);
+            memcpy(ret + 8, itobc(htonl(cqr->port)), 4);
+            memcpy(ret + 12, cqr->owner, cqr->size - 12);
             break;
         }
         case MTYPE_SUCCESSOR_QUERY:
         {
             SuccessorQuery *squery = (SuccessorQuery *) msg;
-            if (squery->fromId == NULL) {
-                dprt << "From ID cannot be empty";
-                return NULL;
-            } else if (squery->toId == NULL) {
-                dprt << "To ID cannot be empty";
-                return NULL;    
-            } 
-            
-            // (4B for type) + (4B for size) + (2 * 160B message digests)
-            size = 328;
-            if (squery->successor != NULL) size += 160;
-            
-            ret = new unsigned char[size];
-            memcpy(ret, itobc(size), 4);
-            memcpy(ret + 4, itobc(squery->type), 4);
-            memcpy(ret + 8, squery->fromId, 160);
-            memcpy(ret + 168, squery->toId, 160);
-            if (squery->successor != NULL) {
-                memcpy(ret + 328, squery->successor, 160);
-            }
+            ret = new unsigned char[squery->size];
+            memcpy(ret, itobc(htonl(squery->type)), 4);
+            memcpy(ret + 4, itobc(htonl(squery->size)), 4);
+            memcpy(ret + 8, squery->sender, squery->size - 8);
+            break;
+        }
+        case MTYPE_SUCCESSOR_QUERY_RESPONSE:
+        {
+            SuccessorQueryResponse *sqr = (SuccessorQueryResponse *) msg;
+            ret = new unsigned char[sqr->size];
+            memcpy(ret, itobc(htonl(sqr->type)), 4);
+            memcpy(ret + 4, itobc(htonl(sqr->size)), 4);
+            memcpy(ret + 8, sqr->responder, sqr->size - 8);
             break;
         }
         default:
@@ -80,48 +62,43 @@ unsigned char *MessageHandler::serialize(void *msg) {
 
 void *MessageHandler::unserialize(unsigned char *byteStream) {
     switch (this->getType(byteStream)) {
-        case MTYPE_CHORD_QUERY:
+        case MTYPE_KEY_QUERY:
         {
-            ChordQuery *cquery = new ChordQuery();
-            cquery->type = MTYPE_CHORD_QUERY;
-            cquery->size = bctoi(byteStream + 4);
-            cquery->fromId = new unsigned char[160];
-            cquery->toId = new unsigned char[160];
-            cquery->key = new unsigned char[160];
-            
-            memcpy(cquery->fromId, byteStream + 8, 160);
-            memcpy(cquery->toId, byteStream + 168, 160);
-            memcpy(cquery->key, byteStream + 328, 160);
-
-            if (cquery->size == 648) {
-                cquery->keyOwner = new unsigned char[160];
-                memcpy(cquery->keyOwner, byteStream + 488, 160);
-            } else {
-                cquery->keyOwner = NULL;
-            }
-            
+            KeyQuery *cquery = new KeyQuery();
+            cquery->type = MTYPE_KEY_QUERY;
+            cquery->size = ntohl(bctoi(byteStream + 4));
+            cquery->key = ntohl(bctoi(byteStream + 8));
+            cquery->sender = new char[cquery->size - 12];
+            memcpy(cquery->sender, byteStream + 12, cquery->size - 12);
             return cquery;
+        }
+        case MTYPE_KEY_QUERY_RESPONSE:
+        {
+            KeyQueryResponse *cqr = new KeyQueryResponse();
+            cqr->type = MTYPE_KEY_QUERY_RESPONSE;
+            cqr->size = ntohl(bctoi(byteStream + 4));
+            cqr->port = ntohl(bctoi(byteStream + 8));
+            cqr->owner = new char[cqr->size - 12];
+            memcpy(cqr->owner, byteStream + 12, cqr->size - 12);
+            return cqr;
         }
         case MTYPE_SUCCESSOR_QUERY:
         {
             SuccessorQuery *squery = new SuccessorQuery();
-            squery->type = MTYPE_CHORD_QUERY;
-            squery->size = bctoi(byteStream + 4);
-            squery->fromId = new unsigned char[160];
-            squery->toId = new unsigned char[160];
-            
-            memcpy(squery->fromId, byteStream + 8, 160);
-            memcpy(squery->toId, byteStream + 168, 160);
-
-            if (squery->size == 488) {
-                squery->successor = new unsigned char[160];
-                memcpy(squery->successor, byteStream + 328, 160);
-            } else {
-                squery->successor = NULL;
-            }
-            
+            squery->type = MTYPE_KEY_QUERY;
+            squery->size = ntohl(bctoi(byteStream + 4));
+            squery->sender = new char[squery->size - 8];
+            memcpy(squery->sender, byteStream + 8, squery->size - 8);
             return squery;
-            break;
+        }
+        case MTYPE_SUCCESSOR_QUERY_RESPONSE:
+        {
+            SuccessorQueryResponse *sqr = new SuccessorQueryResponse();
+            sqr->type = MTYPE_SUCCESSOR_QUERY_RESPONSE;
+            sqr->size = ntohl(bctoi(byteStream + 4));
+            sqr->responder = new char[sqr->size - 8];
+            memcpy(sqr->responder, byteStream + 8, sqr->size - 8);
+            return sqr;
         }
         default:
             dprt << "Cannot identify message type: " << this->getType(byteStream);
@@ -130,7 +107,7 @@ void *MessageHandler::unserialize(unsigned char *byteStream) {
 }
 
 unsigned int MessageHandler::getSize(unsigned char *byteStream) {
-    return bctoi(byteStream + 4);
+    return ntohl(bctoi(byteStream + 4));
 }
 
 unsigned int MessageHandler::getSize(void *msg) {
@@ -138,7 +115,7 @@ unsigned int MessageHandler::getSize(void *msg) {
 }
 
 unsigned int MessageHandler::getType(unsigned char *byteStream) {
-    return bctoi(byteStream);
+    return ntohl(bctoi(byteStream));
 }
 
 unsigned int MessageHandler::getType(void *msg) {
