@@ -12,34 +12,74 @@ using namespace std;
 
 Chord *crd;
 
-void setup() {
+void setup(unsigned int appPort, unsigned int chordPort, char *joinNode = NULL) {
     string s = string(getComputerName()) + "_store";
     //mkdir(s.c_str(), 0776);
+    crd = new Chord(appPort, chordPort);
     
-    crd = new Chord(7783, 9293);
+    // Sets which node to join
+    crd->setJoinPointIp(joinNode);
 }
 
 
-int main() {
-    char *joinNode = getIpAddr("xinu02.cs.purdue.edu");
-    cout << "Setting up chord" << endl;
-    setup();
+int main(int argc, char **argv) {
+    unsigned int chordPort = 0, appPort = 0;
+    char *joinNode = NULL;
     
-    cout << "Getting hash" << endl;
-    if (crd->getHashedKey(NULL) == 0) {
-        cerr << "[ERROR] Cannot get hashed key: " << crd->getError() << endl;
+    int optflag;
+    
+    // Get command line arguments
+    while ((optflag = getopt(argc, argv, "p:c:j:")) != -1) {
+        switch (optflag) {
+            case 'p':
+                appPort = atoi(optarg);
+                if (!isValidPort(appPort)) {
+                    cerr << "[ERROR] Invalid port number: " << appPort << endl;
+                    return -1;
+                }
+                
+                dprt << "  App Port: " << appPort;
+                break;
+            case 'c':
+                chordPort = atoi(optarg);
+                if (!isValidPort(chordPort)) {
+                    cerr << "[ERROR] Invalid port number: " << chordPort << endl;
+                    return -1;
+                }
+                
+                dprt << "Chord Port: " << chordPort;
+                break;
+            case 'j':
+                joinNode = optarg;
+                dprt << "   Join IP: " << joinNode;
+                break;
+            default:
+                cerr << "Invalid argument." << endl;
+                return -1;
+        }
     }
+    
+    if (chordPort == 0 || appPort == 0) {
+        cerr << "Insufficient argument: chord and app port are both needed." << endl;
+        cout << "Usage: ./" << argv[0] << " -c CHORD_PORT -p APP_PORT [-j JOIN_IPADDR]" << endl;
+        return -1;
+    }
+    
+    cout << "Setting up chord" << endl;
+    setup(appPort, chordPort, joinNode);
     
     cout << "Initing chord" << endl;
     if (!crd->init()) {
-        cerr << "Cannot start Chord service. Aborting..." << endl;
-        cout << "ID is: " << crd->getHashedId() << endl;
+        cerr << "Cannot init Chord service. Aborting..." << endl;
         return -1;
     }
+
+    if (!crd->start()) {
+        cerr << "Cannot start Chord service. Aborting..." << endl;
+        cerr << crd->getError() << endl;
+    }
     
-    cout << "Joining chord" << endl;
-    if (!crd->join(joinNode)) {
-        cerr << "Cannot join " << joinNode << endl;
-        return -1;
+    while (true) {
+        usleep(100000);
     }
 }

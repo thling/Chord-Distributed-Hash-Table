@@ -5,12 +5,15 @@
 
 class MessageHandler {
 public:
-    unsigned char *serialize(void *msg);
-    void *unserialize(unsigned char *byteStream);
-    unsigned int getType(unsigned char *byteStream);
-    unsigned int getType(void *msg);
-    unsigned int getSize(unsigned char *byteStream);
-    unsigned int getSize(void *msg);
+    static unsigned char *serialize(void *msg);
+    static void *unserialize(unsigned char *byteStream);
+    static unsigned int getType(unsigned char *byteStream);
+    static unsigned int getType(void *msg);
+    static unsigned int getSize(unsigned char *byteStream);
+    static unsigned int getSize(void *msg);
+    
+    static SuccessorQuery *createSQ(uint32_t searchTerm, uint32_t appPort, char *sender);
+    static SuccessorQueryResponse *createSQR(uint32_t searchTerm, uint32_t appPort, char *responder);
 };
 
 #endif

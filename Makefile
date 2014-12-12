@@ -17,6 +17,12 @@ Chord.o: src/Chord.cpp include/Chord.hpp include/Utils.hpp MessageHandler.o
 
 sample: src/SampleApp.cpp Chord.o MessageHandler.o include/Utils.hpp
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+	
+s1: sample
+	./sample -c 48693 -p 31627
+
+s2: sample
+	./sample -c 48693 -p 9332 -j 128.10.3.51
 
 clean:
 	rm -rf *.o *~ src/*~ include/*~ include/*.hpp.gch $(EXECS) $(OBJS)

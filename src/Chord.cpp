@@ -6,6 +6,7 @@
 
 #include <gmp.h>
 #include <openssl/sha.h>
+#include <pthread.h>
 
 #include <netdb.h>
 #include <sys/select.h>
@@ -16,36 +17,276 @@
 #include "../include/Chord.hpp"
 #include "../include/MessageHandler.hpp"
 #include "../include/MessageTypes.hpp"
+#include "../include/ThreadFactory.hpp"
 #include "../include/Utils.hpp"
 
 using namespace std;
 
-Chord::Chord(unsigned int appPort, unsigned int chordPort, char *ipaddr) {
+pthread_mutex_t sqrMutex;
+
+Chord::Chord(unsigned int appPort, unsigned int chordPort, char *thisIpaddr) {
     if (ipaddr == NULL) {
         this->ipaddr = getIpAddr();
     } else {
-        this->ipaddr = ipaddr;
+        this->ipaddr = thisIpaddr;
     }
     
     this->chordPort = chordPort;
     this->appPort = appPort;
+    
+    pthread_mutex_init(&sqrMutex, NULL);
+    
+    this->joinPointIp = NULL;
+    this->state = UNINITIALIZED;
 }
 
+Chord::~Chord() {
+    this->stop();
+}
+
+/**
+ * Initializes the chord service
+ * 
+ * @return  True if init succeeded; false otherwise and sets ChordError number
+ */
 bool Chord::init() {
     this->hashedId = this->getConsistentHash(this->ipaddr, strlen(this->ipaddr) + 1);
     this->predecessor = NULL;
     this->successor = NULL;
-    this->mhandler = new MessageHandler();
-
+    this->hostname = getHostname();
+    
+    this->state = INITIALIZED;
     return true;
 }
 
-char *Chord::query(char *key) {
+void Chord::stop() {
+    this->state = SERVICE_CLOSING;
+    close(this->chord_sfd);
+    this->waitExit();
+}
+
+/**
+ * Starts the chord thread. This includes setting up socket,
+ * binding to port, and attempting to join an existing chord network
+ * (if a joinPointIp was specified by setJoinPointIp())
+ * 
+ * @return  True if successfully started. False on error, and sets ChordError number
+ */
+bool Chord::start() {
+    if (this->state != INITIALIZED) {
+        dprt << "Attempted to start an uninitialzed chord service";
+        this->setErrorno(ERR_NOT_INITIALIZED);
+        return false;
+    }
+    
+    // Set up UDP socket
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+
+    stringstream ss;
+    ss << this->chordPort;
+    
+    getaddrinfo(this->hostname, ss.str().c_str(), &hints, &res);
+    
+    this->chord_sfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (this->chord_sfd < 0) {
+        dprt << "Call to socket failed: " << strerror(errno);
+        this->setErrorno(ERR_CANNOT_CONNECT);
+        this->state = SERVICE_FAILED;
+        return false;
+    }
+    
+    if (bind(this->chord_sfd, res->ai_addr, res->ai_addrlen) < 0) {
+        dprt << "Call to bind failed: " << strerror(errno);
+        this->setErrorno(ERR_CANNOT_CONNECT);
+        this->state = SERVICE_FAILED;
+        return false;
+    }
+    
+    // Attempt to join, if specified which IP to join
+    if (!this->join()) {
+        this->setErrorno(ERR_CANNOT_JOIN_CHORD);
+        this->state = SERVICE_FAILED;
+        return false;
+    }
+    
+    // Attempt to start receiver thread
+    if (!this->startThread()) {
+        dprt << "Cannot start receiving thread: " << strerror(errno);
+        this->setErrorno(ERR_CANNOT_START_THREAD);
+        this->state = SERVICE_FAILED;
+        return false;
+    }
+    
+    this->state = SERVICING;
+    return true;
+}
+
+void Chord::threadWorker() {
+    dprt << "Starting thread worker...";
+    while (true) {
+        int recvSize = 0;
+        
+        void *msg = this->receiveMessage(recvSize);
+        if (msg == NULL) {
+            if (recvSize == -1) {
+                dprt << "Cannot listen to socket: " << strerror(errno);
+            } else if (recvSize == -2) {
+                // Timeout
+                usleep(100000);
+                continue;
+            } else {
+                dprt << "Socket closed, returning";
+                break;
+            }
+        }
+        
+        unsigned int type = MessageHandler::getType(msg);
+        switch (type) {
+            case MTYPE_KEY_QUERY:
+            {
+                break;
+            }
+            case MTYPE_KEY_QUERY_RESPONSE:
+            {
+                break;
+            }
+            case MTYPE_SUCCESSOR_QUERY:
+            {
+                dprt << "New successor query";
+                SuccessorQuery *sq = (SuccessorQuery *) msg;
+                
+                if (this->successor == NULL && this->predecessor == NULL) {
+                    SuccessorQueryResponse *sqr = MessageHandler::createSQR(
+                            sq->searchTerm,
+                            this->appPort,
+                            this->ipaddr
+                    );
+                    
+                    this->successor = createNode(sq->sender);
+                    this->successor->appPort = sq->appPort;
+                    this->send(this->successor, MessageHandler::serialize(sqr), sqr->size);
+                    
+                    delete[] sqr->responder;
+                    delete sqr;
+                } else if ((sq->searchTerm > this->hashedId && sq->searchTerm <= this->successor->hashedId)
+                        || (sq->searchTerm > this->hashedId && this->hashedId > this->successor->hashedId)) {
+                    SuccessorQueryResponse *sqr = MessageHandler::createSQR(
+                            sq->searchTerm,
+                            this->successor->appPort,
+                            this->successor->ipaddr
+                    );
+ 
+                    this->successor = createNode(sq->sender);
+                    this->successor->appPort = sq->appPort;
+                    this->send(this->successor, MessageHandler::serialize(sqr), sqr->size);
+                    
+                    delete[] sqr->responder;
+                    delete sqr;
+                } else {
+                    this->send(this->successor, MessageHandler::serialize(sq), sq->size);
+                }
+                
+                delete[] sq->sender;
+                delete sq;
+                break;
+            }
+            case MTYPE_SUCCESSOR_QUERY_RESPONSE:
+            {   
+                dprt << "New successor query response";
+                SuccessorQueryResponse *sqr = (SuccessorQueryResponse *) msg;
+                this->pushSqr(sqr);
+                break;
+            }
+            default:
+                dprt << "Cannot identify type";
+        }
+        
+        usleep(100000);
+    }
+}
+
+char *Chord::query(char *key, char *hostip, unsigned int &hostport) {
     if (key == NULL) {
         return NULL;
     }
     
-    return NULL;
+    if (this->successor == NULL) {
+        hostip = NULL;
+        hostport = 0;
+        return NULL;
+    }
+    
+    unsigned int keyhash = this->getConsistentHash(key, strlen(key) + 1);
+    SuccessorQuery *sq = MessageHandler::createSQ(keyhash, this->appPort, this->ipaddr);
+    
+    /** change this **/
+    this->send(this->successor, MessageHandler::serialize(sq), sq->size);
+    
+    SuccessorQueryResponse *sqr = NULL;
+    while (true) {
+        sqr = this->popSqr();
+        if (sqr == NULL) {
+            usleep(100000);
+            continue;
+        }
+        
+        break;
+    }
+    
+    if (sqr->searchTerm == keyhash) {
+        hostip = sqr->responder;
+        hostport = sqr->appPort;
+    } else {
+        hostip = NULL;
+        hostport = 0;
+        return NULL;
+    }
+    
+    return hostip;
+}
+
+void *Chord::receiveMessage(int &size, unsigned int timeout) {
+    // For storing things
+    unsigned char *buffer = new unsigned char [1024];
+    // Calculate timeout if specified
+    struct timeval tv = {timeout / 1000, (timeout - (timeout / 1000) * 1000) * 1000};
+    // Populate fd_sets for select
+    fd_set readfds, exceptfds;
+    FD_SET(this->chord_sfd, &readfds);
+    exceptfds = readfds;
+    
+    // Select on socket fds for given timeout
+    int ret = select(this->chord_sfd + 1, &readfds, NULL, &exceptfds, &tv);
+    if (ret == -1) {
+        cerr << "Cannot receive: " << strerror(errno) << endl;
+        this->setErrorno(ERR_CANNOT_CONNECT);
+        size = ret;
+        return NULL;
+    } else if (ret == 0) {
+        // Timeout, set size to -2
+        size = -2;
+        return NULL;
+    } else {
+        // Try to receive
+        size = recvfrom(this->chord_sfd, buffer, 1024, 0, NULL, 0);
+
+        if (size == -1) {
+            dprt << "Cannot receive: " << strerror(errno);
+            this->setErrorno(ERR_CANNOT_CONNECT);
+            return NULL;
+        } else if (size == 0) {
+            return NULL;
+        }
+    }
+    
+    // Unserialze and return message
+    void *retval = MessageHandler::unserialize(buffer);
+    delete[] buffer;
+    
+    return retval;
 }
 
 unsigned int Chord::getHashedId() {
@@ -65,53 +306,50 @@ node *Chord::getSuccessor() {
     return this->successor;
 }
 
-bool Chord::join(char *ipaddr) {
-    if (ipaddr == NULL || strcmp(ipaddr, this->ipaddr) == 0) {
-        //  If ipaddr == NULL or == self, create new Chord ring
+void Chord::setJoinPointIp(char *toJoin) {
+    this->joinPointIp = toJoin;
+}
+
+bool Chord::join() {
+    if (this->state != INITIALIZED) {
+        this->setErrorno(ERR_NOT_INITIALIZED);
+        return false;
+    }
+    
+    this->state = WAITING_TO_JOIN;
+    
+    if (this->joinPointIp == NULL || strcmp(this->joinPointIp, this->ipaddr) == 0) {
+        // If ipaddr == NULL or == self, create new Chord ring
         // maybe don't have to handle this, check later
-        
-        return true;
     } else {
         // Construct successor request
-        SuccessorQuery *squery = new SuccessorQuery();
-        squery->type = MTYPE_SUCCESSOR_QUERY;
-        squery->size = 8 + strlen(this->ipaddr) + 1;
-        squery->sender = new char[strlen(this->ipaddr) + 1];
-        memcpy(squery->sender, this->ipaddr, strlen(this->ipaddr) + 1);
-        
-        unsigned char *serializedData = this->mhandler->serialize(squery);
-        unsigned char *buffer = new unsigned char[1024];
-        
-        // Create a node struct for sending, using the receiver's ipaddress
-        node *sendto = this->createNode(ipaddr);
+        SuccessorQuery *squery = MessageHandler::createSQ(this->hashedId, this->appPort, this->ipaddr);
+        unsigned char *serializedData = MessageHandler::serialize(squery);
 
+        // Create a node struct for sending, using the receiver's ipaddress
+        node *sendto = this->createNode(this->joinPointIp);
+        
+        void *msg = NULL;
         int timeoutCount = 0;
+        
         while (timeoutCount < 3) {
             this->send(sendto, serializedData, squery->size);
             
-            // Wait on 1.5 secs timeout
-            struct timeval tv = {1, 500000};
-            fd_set readfds;
-            FD_SET(this->chordSfd, &readfds);
-
-            int ret = select(this->chordSfd + 1, &readfds, NULL, NULL, &tv);
+            int recvd = 0;
+            msg = this->receiveMessage(recvd, 1500);
             
-            if (ret == -1) {
+            if (recvd == -1) {
                 cerr << "Cannot receive: " << strerror(errno) << endl;
                 this->setErrorno(ERR_CANNOT_CONNECT);
                 return false;
-            } else if (ret == 0) {
-                // Timeout event, 3 timeout = can't join
+            } else if (recvd == -2) {
+                // Timeout event
                 timeoutCount++;
+            } else if (recvd == 0) {
+                cerr << "Socket was closed" << endl;
+                return false;
             } else {
-                // Try to receive
-                int recvd = recvfrom(this->chordSfd, buffer, 1024, 0, NULL, 0);
-                
-                if (recvd == -1) {
-                    cerr << "Cannot receive: " << strerror(errno) << endl;
-                    this->setErrorno(ERR_CANNOT_CONNECT);
-                    return false;
-                } else if (mhandler->getType(buffer) != MTYPE_SUCCESSOR_QUERY_RESPONSE) {
+                if (MessageHandler::getType(msg) != MTYPE_SUCCESSOR_QUERY_RESPONSE) {
                     continue;   // Ignore if not expected type
                 }
 
@@ -120,21 +358,27 @@ bool Chord::join(char *ipaddr) {
         }
 
         if (timeoutCount == 3) {
-            cerr << "Timeout occured while attempted to join " << ipaddr << endl;
+            dprt << "Timeout occured while attempted to join " << ipaddr;
             this->setErrorno(ERR_CANNOT_JOIN_CHORD);
             return false;
         }
 
         // Received a proper response;
-        SuccessorQueryResponse *sqr = (SuccessorQueryResponse *) mhandler->unserialize(buffer);
-        this->successor = this->createNode(sqr->responder);
+        SuccessorQueryResponse *sqr = (SuccessorQueryResponse *) msg;
+        if (sqr->responder == NULL) {
+            this->successor = NULL;
+        } else {
+            this->successor = this->createNode(sqr->responder);
+            this->successor->appPort = sqr->appPort;
+        }
         
         delete squery;
         delete sendto;
         delete sqr;
-        
-        return true;
     }
+    
+    this->state = IN_NETWORK;
+    return true;
 }
 
 node *Chord::createNode(char *ipaddr = NULL) {
@@ -183,7 +427,6 @@ node *Chord::createNode(char *ipaddr = NULL) {
 }
 
 char *Chord::getChordMap() {
-    
     return NULL;
 }
 
@@ -221,4 +464,29 @@ unsigned int Chord::getConsistentHash(char *tohash, size_t len) {
     dprt << "Key/Node " << tohash << " maps to " << pos;
     
     return pos;
+}
+
+void Chord::pushSqr(SuccessorQueryResponse *sqr) {
+    pthread_mutex_lock(&sqrMutex);
+    this->sqrQueue.push_back(sqr);
+    pthread_mutex_unlock(&sqrMutex);
+}
+
+SuccessorQueryResponse *Chord::popSqr() {
+    SuccessorQueryResponse *ret = NULL;
+    
+    pthread_mutex_lock(&sqrMutex);
+    vector<SuccessorQueryResponse *>::iterator it = this->sqrQueue.begin();
+    if (it != this->sqrQueue.end()) {
+        // Has item
+        ret = (*it);
+        this->sqrQueue.erase(it);
+    }
+    pthread_mutex_unlock(&sqrMutex);
+    
+    return ret;
+}
+
+unsigned int Chord::getState() {
+    return this->state;
 }

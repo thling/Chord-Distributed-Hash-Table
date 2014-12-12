@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <cstring>
 
 #include "../include/MessageHandler.hpp"
 #include "../include/MessageTypes.hpp"
@@ -14,25 +15,29 @@ unsigned char *MessageHandler::serialize(void *msg) {
     
     unsigned char *ret = NULL;
     
-    switch (this->getType(msg)) {
+    switch (MessageHandler::getType(msg)) {
         case MTYPE_KEY_QUERY:
         {
-            KeyQuery *cquery = (KeyQuery *) msg;
-            ret = new unsigned char[cquery->size];
-            memcpy(ret, itobc(htonl(cquery->type)), 4);
-            memcpy(ret + 4, itobc(htonl(cquery->size)), 4);
-            memcpy(ret + 8, itobc(htonl(cquery->key)), 4);
-            memcpy(ret + 12, cquery->sender, cquery->size - 12);
+            KeyQuery *kquery = (KeyQuery *) msg;
+            ret = new unsigned char[kquery->size];
+            memcpy(ret, itobc(htonl(kquery->type)), 4);
+            memcpy(ret + 4, itobc(htonl(kquery->size)), 4);
+            memcpy(ret + 8, itobc(htonl(kquery->key)), 4);
+            if (kquery->size - 12 > 0) {
+                memcpy(ret + 12, kquery->sender, kquery->size - 12);
+            }
             break;
         }
         case MTYPE_KEY_QUERY_RESPONSE:
         {
-            KeyQueryResponse *cqr = (KeyQueryResponse *) msg;
-            ret = new unsigned char[cqr->size];
-            memcpy(ret, itobc(htonl(cqr->type)), 4);
-            memcpy(ret + 4, itobc(htonl(cqr->size)), 4);
-            memcpy(ret + 8, itobc(htonl(cqr->port)), 4);
-            memcpy(ret + 12, cqr->owner, cqr->size - 12);
+            KeyQueryResponse *kqr = (KeyQueryResponse *) msg;
+            ret = new unsigned char[kqr->size];
+            memcpy(ret, itobc(htonl(kqr->type)), 4);
+            memcpy(ret + 4, itobc(htonl(kqr->size)), 4);
+            memcpy(ret + 8, itobc(htonl(kqr->port)), 4);
+            if (kqr->size - 12 > 0) {
+                memcpy(ret + 12, kqr->owner, kqr->size - 12);
+            }
             break;
         }
         case MTYPE_SUCCESSOR_QUERY:
@@ -41,7 +46,10 @@ unsigned char *MessageHandler::serialize(void *msg) {
             ret = new unsigned char[squery->size];
             memcpy(ret, itobc(htonl(squery->type)), 4);
             memcpy(ret + 4, itobc(htonl(squery->size)), 4);
-            memcpy(ret + 8, squery->sender, squery->size - 8);
+            memcpy(ret + 8, itobc(htonl(squery->searchTerm)), 4);
+            if (squery->size - 12 > 0) {
+                memcpy(ret + 12, squery->sender, squery->size - 12);
+            }
             break;
         }
         case MTYPE_SUCCESSOR_QUERY_RESPONSE:
@@ -50,45 +58,62 @@ unsigned char *MessageHandler::serialize(void *msg) {
             ret = new unsigned char[sqr->size];
             memcpy(ret, itobc(htonl(sqr->type)), 4);
             memcpy(ret + 4, itobc(htonl(sqr->size)), 4);
-            memcpy(ret + 8, sqr->responder, sqr->size - 8);
+            memcpy(ret + 8, itobc(htonl(sqr->searchTerm)), 4);
+            memcpy(ret + 12, itobc(htonl(sqr->appPort)), 4);
+            if (sqr->size - 16 > 0) {
+                memcpy(ret + 16, sqr->responder, sqr->size - 16);
+            }
             break;
         }
         default:
-            cerr << "Cannot identify message type: " << this->getType(msg) << endl;
+            cerr << "Cannot identify message type: " << MessageHandler::getType(msg) << endl;
     }
     
     return ret;
 }
 
 void *MessageHandler::unserialize(unsigned char *byteStream) {
-    switch (this->getType(byteStream)) {
+    switch (MessageHandler::getType(byteStream)) {
         case MTYPE_KEY_QUERY:
         {
-            KeyQuery *cquery = new KeyQuery();
-            cquery->type = MTYPE_KEY_QUERY;
-            cquery->size = ntohl(bctoi(byteStream + 4));
-            cquery->key = ntohl(bctoi(byteStream + 8));
-            cquery->sender = new char[cquery->size - 12];
-            memcpy(cquery->sender, byteStream + 12, cquery->size - 12);
-            return cquery;
+            KeyQuery *kquery = new KeyQuery();
+            kquery->type = MTYPE_KEY_QUERY;
+            kquery->size = ntohl(bctoi(byteStream + 4));
+            kquery->key = ntohl(bctoi(byteStream + 8));
+            if (kquery->size - 12 > 0) {
+                kquery->sender = new char[kquery->size - 12];
+                memcpy(kquery->sender, byteStream + 12, kquery->size - 12);
+            } else {
+                kquery->sender = NULL;
+            }
+            return kquery;
         }
         case MTYPE_KEY_QUERY_RESPONSE:
         {
-            KeyQueryResponse *cqr = new KeyQueryResponse();
-            cqr->type = MTYPE_KEY_QUERY_RESPONSE;
-            cqr->size = ntohl(bctoi(byteStream + 4));
-            cqr->port = ntohl(bctoi(byteStream + 8));
-            cqr->owner = new char[cqr->size - 12];
-            memcpy(cqr->owner, byteStream + 12, cqr->size - 12);
-            return cqr;
+            KeyQueryResponse *kqr = new KeyQueryResponse();
+            kqr->type = MTYPE_KEY_QUERY_RESPONSE;
+            kqr->size = ntohl(bctoi(byteStream + 4));
+            kqr->port = ntohl(bctoi(byteStream + 8));
+            if (kqr->size - 12 > 0) {
+                kqr->owner = new char[kqr->size - 12];
+                memcpy(kqr->owner, byteStream + 12, kqr->size - 12);
+            } else {
+                kqr->owner = NULL;
+            }
+            return kqr;
         }
         case MTYPE_SUCCESSOR_QUERY:
         {
             SuccessorQuery *squery = new SuccessorQuery();
-            squery->type = MTYPE_KEY_QUERY;
+            squery->type = MTYPE_SUCCESSOR_QUERY;
             squery->size = ntohl(bctoi(byteStream + 4));
-            squery->sender = new char[squery->size - 8];
-            memcpy(squery->sender, byteStream + 8, squery->size - 8);
+            squery->searchTerm = ntohl(bctoi(byteStream + 8));
+            if (squery->size - 12 > 0) {
+                squery->sender = new char[squery->size - 12];
+                memcpy(squery->sender, byteStream + 12, squery->size - 12);
+            } else {
+                squery->sender = NULL;
+            }
             return squery;
         }
         case MTYPE_SUCCESSOR_QUERY_RESPONSE:
@@ -96,14 +121,44 @@ void *MessageHandler::unserialize(unsigned char *byteStream) {
             SuccessorQueryResponse *sqr = new SuccessorQueryResponse();
             sqr->type = MTYPE_SUCCESSOR_QUERY_RESPONSE;
             sqr->size = ntohl(bctoi(byteStream + 4));
-            sqr->responder = new char[sqr->size - 8];
-            memcpy(sqr->responder, byteStream + 8, sqr->size - 8);
+            sqr->searchTerm = ntohl(bctoi(byteStream + 8));
+            sqr->appPort = ntohl(bctoi(byteStream + 12));
+            if (sqr->size - 16 > 0) {
+                sqr->responder = new char[sqr->size - 16];
+                memcpy(sqr->responder, byteStream + 16, sqr->size - 16);
+            } else {
+                sqr->responder = NULL;
+            }
             return sqr;
         }
         default:
-            dprt << "Cannot identify message type: " << this->getType(byteStream);
+            dprt << "Cannot identify message type: " << MessageHandler::getType(byteStream);
             return NULL;
     }
+}
+
+SuccessorQuery *MessageHandler::createSQ(uint32_t searchTerm, uint32_t appPort, char *sender) {
+    SuccessorQuery *sq = new SuccessorQuery();
+    sq->type = MTYPE_SUCCESSOR_QUERY;
+    sq->size = 16 + strlen(sender) + 1;
+    sq->searchTerm = searchTerm;
+    sq->appPort = appPort;
+    sq->sender = new char[sq->size - 16];
+    strcpy(sq->sender, sender);
+    
+    return sq;
+}
+
+SuccessorQueryResponse *MessageHandler::createSQR(uint32_t searchTerm, uint32_t appPort, char *responder) {
+    SuccessorQueryResponse *sqr = new SuccessorQueryResponse();
+    sqr->type = MTYPE_SUCCESSOR_QUERY_RESPONSE;
+    sqr->size = 16 + strlen(responder) + 1;
+    sqr->searchTerm = searchTerm;
+    sqr->appPort = appPort;
+    sqr->responder = new char[sqr->size - 16];
+    strcpy(sqr->responder, responder);
+    
+    return sqr;
 }
 
 unsigned int MessageHandler::getSize(unsigned char *byteStream) {

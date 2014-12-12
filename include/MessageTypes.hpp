@@ -47,14 +47,18 @@ typedef struct {
 typedef struct {
     uint32_t type;
     uint32_t size;
+    uint32_t searchTerm;
     
+    uint32_t appPort;
     char *sender;   // IP addr of the sender
 } SuccessorQuery;
 
 typedef struct {
     uint32_t type;
     uint32_t size;
-    
+    uint32_t searchTerm;
+
+    uint32_t appPort;
     char *responder;    // IP addr of the responder
 } SuccessorQueryResponse;
 
