@@ -12,10 +12,10 @@ a: clean all
 MessageHandler.o: src/MessageHandler.cpp include/MessageTypes.hpp include/MessageHandler.hpp
 	$(CC) $(CFLAGS) -c -o $@ $< $(LIBS)
 
-Chord.o: src/Chord.cpp include/Chord.hpp include/Utils.hpp MessageHandler.o
+Chord.o: src/Chord.cpp include/Chord.hpp include/Utils.hpp include/ThreadFactory.hpp MessageHandler.o
 	$(CC) $(CFLAGS) -c -o $@ $< $(LIBS)
 
-sample: src/SampleApp.cpp Chord.o MessageHandler.o include/Utils.hpp
+sample: SampleApp.cpp Chord.o MessageHandler.o include/Utils.hpp
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 	
 s1: sample

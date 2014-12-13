@@ -2,21 +2,38 @@
 #define __CHORD_HPP__
 #define CHORD_LENGTH_BIT 32
 
+#include <map>
 #include <vector>
 
 #include <sys/socket.h>
 
 #include "ChordError.hpp"
 #include "MessageHandler.hpp"
+#include "ServiceNotification.hpp"
 #include "ThreadFactory.hpp"
 
-const unsigned int UNINITIALIZED = 1000;
-const unsigned int INITIALIZED = 1001;
-const unsigned int WAITING_TO_JOIN = 1002;
-const unsigned int IN_NETWORK = 1003;
-const unsigned int SERVICING = 1004;
-const unsigned int SERVICE_CLOSING = 1005;
-const unsigned int SERVICE_FAILED = 1006;
+namespace ChordStatus {
+    enum status {
+        UNINITIALIZED,
+        INITIALIZED,
+        WAITING_TO_JOIN,
+        IN_NETWORK,
+        SERVICING,
+        MAPPING_CHORD,
+        MAPPING_COMPLETED,
+        STABILIZING,
+        SERVICE_CLOSING,
+        SERVICE_FAILED
+    };
+};
+
+
+// How long to wait before resend
+const unsigned int SEND_TIMEOUT = 1500000;  // 1.5 seconds
+// How long between stabilizing
+const unsigned int STABILIZE_TIMEOUT = 1500000;  // 1.5 seconds
+// How many times to try to join
+const unsigned int JOIN_TRIALS = 5;
 
 using namespace std;
 
@@ -31,7 +48,51 @@ typedef struct {
     socklen_t len;
 } node;
 
-class Chord : public ChordError, ThreadFactory {
+typedef struct {
+    uint32_t timestamp;
+    node *recipient;
+    unsigned char *context;
+} msgTimer;
+
+/**
+ * ChordNotification class
+ * 
+ * Used to structure the notification system. Contains all the information
+ * needed for a useful notification for this class instance
+ * 
+ * @extends Notification    Base class for notification object abstraction
+ */
+class ChordNotification : public Notification {
+public:
+    const static unsigned int NTYPE_SYNC_NOTIFICATION = 0;
+    
+    ChordNotification(unsigned int type, const char *fromIp, unsigned int appPort) {
+        this->type = type;
+        this->hostIp = fromIp;
+        this->appPort = appPort;
+    }
+    
+    unsigned int getType() { return this->type; }
+    unsigned int getPort() { return this->appPort; }
+    const char *getIp() { return this->hostIp; }
+    
+protected:
+    unsigned int type;
+    unsigned int appPort;
+    const char *hostIp;
+    
+};
+
+/**
+ * Chord main class
+ * 
+ * Simplified implementation of the chord distributed hash table
+ * 
+ * @extends ChordError              The error wrapper for this chord service
+ * @extends ServiceNotification     Base class for notification service abstraction
+ * @extends ThreadFactory           For object oriented threading environment using pthread
+ */
+class Chord : public ChordError, public ServiceNotification, public ThreadFactory {
 public:
     Chord(unsigned int appPort, unsigned int chordPort, char *ipaddr = NULL);
     ~Chord();
@@ -40,29 +101,45 @@ public:
     bool start();
     void stop();
     
-    char *query(char *key, char *hostip, unsigned int &port);
+    char *query(char *key, char **hostip, unsigned int &port, unsigned int timeout = 0);
     char *getChordMap();
+    unsigned int getHashedKey(char *key);
     
     void setJoinPointIp(char *toJoin);
     
-    unsigned int getState();
+    ChordStatus::status getState();
+    
+    /**
+     * Implements the parent function
+     * 
+     * @return  A ChordNotification object
+     */
+    ChordNotification *popNotification() { return (ChordNotification *) ServiceNotification::popNotification(); }
     
 private:
-    unsigned int state;
+    pthread_mutex_t successorResponseQueueMutex, sendTimerMutex, chordMapResponseQueueMutex;
+
+    ChordStatus::status state, substate;
     unsigned int hashedId;
     unsigned int appPort, chordPort;
+    unsigned int lastStabilizedTimestamp;
     int chord_sfd;
     
     char *ipaddr, *hostname, *joinPointIp;
     node *successor, *predecessor;
     
-    vector<SuccessorQueryResponse *> sqrQueue;
+    map<uint32_t, msgTimer *> sendTimers;
+    vector<SuccessorResponse *> successorResponseQueue;
+    vector<ChordMapResponse *> chordMapResponseQueue;
     
     bool join();
+    void notifySuccessor();
+    
+    void processTimers();
     void threadWorker();
+    void stabilize();
     
     unsigned int getHashedId();
-    unsigned int getHashedKey(char *key);
     
     node *createNode(char *ipaddr);
     node *getSuccessor();
@@ -70,8 +147,13 @@ private:
     void *receiveMessage(int &size, unsigned int timeout = 0);
     size_t send(node *n, unsigned char *data, size_t len, int flag = 0);
     
-    void pushSqr(SuccessorQueryResponse *sqr);
-    SuccessorQueryResponse *popSqr();
+    void pushSuccessorResponse(SuccessorResponse *sr);
+    SuccessorResponse *popSuccessorResponse();
+    void pushChordMapResponse(ChordMapResponse *cmr);
+    ChordMapResponse *popChordMapResponse();
+    
+    void pushSendTimer(node *sendTo, uint32_t searchTerm, unsigned char *data, size_t len);
+    void unsetSendTimer(uint32_t searchTerm);
     
     unsigned int getConsistentHash(char *, size_t len);
 };

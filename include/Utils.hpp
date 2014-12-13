@@ -32,7 +32,7 @@ typedef union byteInt {
 
 
 // Whether to print debug messages
-static bool __DEBUG__ = true;
+static bool __DEBUG__ = false;
 
 // For debugging purpose
 class Log {

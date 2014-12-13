@@ -3,6 +3,9 @@
 
 #include <pthread.h>
 
+/**
+ * For easier object oriented threading using pthread
+ */
 class ThreadFactory {
 public:
     ThreadFactory() {
