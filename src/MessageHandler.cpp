@@ -91,6 +91,8 @@ unsigned char *MessageHandler::serialize(void *msg) {
             }
             break;
         }
+        case MTYPE_JOIN_SUCCESSOR_QUERY:
+        case MTYPE_FINGER_QUERY:
         case MTYPE_SUCCESSOR_QUERY:
         {
             SuccessorQuery *squery = (SuccessorQuery *) msg;
@@ -104,6 +106,7 @@ unsigned char *MessageHandler::serialize(void *msg) {
             }
             break;
         }
+        case MTYPE_FINGER_RESPONSE:
         case MTYPE_SUCCESSOR_RESPONSE:
         {
             SuccessorResponse *sqr = (SuccessorResponse *) msg;
@@ -214,10 +217,12 @@ void *MessageHandler::unserialize(unsigned char *byteStream) {
             }
             return cmr;
         }
+        case MTYPE_JOIN_SUCCESSOR_QUERY:
+        case MTYPE_FINGER_QUERY:
         case MTYPE_SUCCESSOR_QUERY:
         {
             SuccessorQuery *squery = new SuccessorQuery();
-            squery->type = MTYPE_SUCCESSOR_QUERY;
+            squery->type = ntohl(bctoi(byteStream));
             squery->size = ntohl(bctoi(byteStream + 4));
             squery->searchTerm = ntohl(bctoi(byteStream + 8));
             squery->appPort = ntohl(bctoi(byteStream + 12));
@@ -229,10 +234,11 @@ void *MessageHandler::unserialize(unsigned char *byteStream) {
             }
             return squery;
         }
+        case MTYPE_FINGER_RESPONSE:
         case MTYPE_SUCCESSOR_RESPONSE:
         {
             SuccessorResponse *sqr = new SuccessorResponse();
-            sqr->type = MTYPE_SUCCESSOR_RESPONSE;
+            sqr->type = ntohl(bctoi(byteStream));
             sqr->size = ntohl(bctoi(byteStream + 4));
             sqr->searchTerm = ntohl(bctoi(byteStream + 8));
             sqr->appPort = ntohl(bctoi(byteStream + 12));

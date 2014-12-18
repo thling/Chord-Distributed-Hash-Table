@@ -23,7 +23,8 @@ namespace ChordStatus {
         MAPPING_COMPLETED,
         STABILIZING,
         SERVICE_CLOSING,
-        SERVICE_FAILED
+        SERVICE_FAILED,
+        UPDATING_FINGER
     };
 };
 
@@ -31,7 +32,7 @@ namespace ChordStatus {
 // How long to wait before resend
 const unsigned int SEND_TIMEOUT = 1500000;  // 1.5 seconds
 // How long between stabilizing
-const unsigned int STABILIZE_TIMEOUT = 1500000;  // 1.5 seconds
+const unsigned int PERIODIC_JOBS_TIMEOUT = 1500000;  // 1.5 seconds
 // How many times to try to join
 const unsigned int JOIN_TRIALS = 5;
 
@@ -41,6 +42,7 @@ typedef struct {
     char *ipaddr;
     char *hostname;
     unsigned int hashedId;
+    bool isSelf;
     
     int sfd;
     unsigned int appPort;
@@ -103,6 +105,7 @@ public:
     
     char *query(char *key, char **hostip, unsigned int &port, unsigned int timeout = 0);
     char *getChordMap();
+    char *getFingerTable();
     unsigned int getHashedKey(char *key);
     
     void setJoinPointIp(char *toJoin);
@@ -117,16 +120,18 @@ public:
     ChordNotification *popNotification() { return (ChordNotification *) ServiceNotification::popNotification(); }
     
 private:
-    pthread_mutex_t successorResponseQueueMutex, sendTimerMutex, chordMapResponseQueueMutex;
+    pthread_mutex_t successorResponseQueueMutex, sendTimerMutex, chordMapResponseQueueMutex, fingerMutex;
 
     ChordStatus::status state, substate;
     unsigned int hashedId;
     unsigned int appPort, chordPort;
     unsigned int lastStabilizedTimestamp;
+    unsigned int lastFingerUpdateTimestamp;
     int chord_sfd;
     
     char *ipaddr, *hostname, *joinPointIp;
     node *successor, *predecessor;
+    map<uint32_t, node *> fingers;
     
     map<uint32_t, msgTimer *> sendTimers;
     vector<SuccessorResponse *> successorResponseQueue;
@@ -135,13 +140,13 @@ private:
     bool join();
     void notifySuccessor();
     
-    void processTimers();
+    void processPeriodicJobs();
     void threadWorker();
     void stabilize();
     
     unsigned int getHashedId();
     
-    node *createNode(char *ipaddr);
+    node *createNode(char *ipaddr = NULL);
     node *getSuccessor();
     
     void *receiveMessage(int &size, unsigned int timeout = 0);
@@ -156,6 +161,8 @@ private:
     void unsetSendTimer(uint32_t searchTerm);
     
     unsigned int getConsistentHash(char *, size_t len);
+    bool isInSuccessor(uint32_t key, uint32_t start = 0, uint32_t end = 0);
+    node *getSuccessorOf(uint32_t key, bool useFinger = true);
 };
 
 #endif

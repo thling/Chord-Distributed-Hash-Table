@@ -16,6 +16,42 @@ Chord *crd;
 // Used to lock user input while synchronizing
 pthread_mutex_t userInputLock;
 
+void usage() {
+    cout << "SampleApp - a good way to play with the simplified Chord implementation." << endl;
+    cout << endl;
+    cout << "  Usage: ./sample -c CHORD_PORT -p APP_PORT [-j IP_ADDRESS_TO_JOIN]" << endl;
+    cout << "      -c CHORD_PORT" << endl;
+    cout << "         The port number to use for Chord layer. It is important to keep all Chord port the same" << endl;
+    cout << endl;
+    cout << "      -p APP_PORT" << endl;
+    cout << "         The port this application uses for file transfers" << endl;
+    cout << endl;
+    cout << "      -j IP_ADDRESS_TO_JOIN" << endl;
+    cout << "         Optional. Specifies which chord ring to join. If not specified, a new Chord ring will be created." << endl;
+    cout << endl;
+    cout << "  Command Line" << endl;
+    cout << "    help      Displays this help text" << endl;
+    cout << endl;
+    cout << "    exit      Terminate the connection. Note since voluntary node leaves is not implemented, "
+         <<               "this command will cause the program to hang" << endl;
+    cout << endl;
+    cout << "    time     [on|off]" << endl;
+    cout << "             Turn timer on or off. Turning timer on will trigger a stopwatch right after issuing "
+         <<              "any command, and the elapsed time will be displayed at the end of command run" << endl;
+    cout << endl;
+    cout << "    hash     Anything" << endl;
+    cout << "             Displays the consistent hash of [TEXT]" << endl;
+    cout << endl;
+    cout << "    finger   Prints the finger table" << endl;
+    cout << endl;
+    cout << "    map      Prints the map of the current Chord ring." << endl;
+    cout << endl;
+    cout << "    find     Finds a certain key. Expected output will be 'Uploading to HOST:PORT,' "
+                         "but this is for demonstration only and nothing will be transferred (the "
+         <<              "sample app does not have file transfer ability)" << endl;
+}
+
+
 /**
  * Separate thread for non-blocking notifications
  * 
@@ -63,6 +99,8 @@ void *notificationListener(void *arg) {
  * Command line loop, waiting for user input
  */
 void commandLoop() {
+    bool timeRun = false;
+    
     while (true) {
         pthread_mutex_unlock(&userInputLock);
         string cmd;
@@ -79,11 +117,33 @@ void commandLoop() {
 
         // Disables prompt loop
         string command = tokens[0];
+        
+        unsigned int startTime = getTimeInUSeconds();
 
         if (command.compare("exit") == 0) {
             crd->stop();
             pthread_mutex_unlock(&userInputLock);
             break;
+        } else if (command.compare("help") == 0) {
+            usage();
+        } else if (command.compare("time") == 0) {
+            if (tokens.size() == 2) {
+                if (tokens[1].compare("on") == 0) {
+                    cout << ">> Timer is turned on. Everything will be timed."
+                         << endl;
+                    timeRun = true;
+                } else if (tokens[1].compare("off") == 0) {
+                    cout << ">> Timer is turned off. Nothing will be timed."
+                         << endl;
+                    timeRun = false;
+                }
+            } else {
+                cerr << "[ERROR] Invalid argument for command time. Usage: time [on|off]" << endl;
+            }
+        } else if (command.compare("finger") == 0) {
+            cout << ">> Printing finger table:" << endl;
+            cout << "Finger Table: " << endl;
+            cout << crd->getFingerTable() << endl;
         } else if (command.compare("map") == 0) {
             cout << ">> Getting chord map..." << endl;
             
@@ -93,7 +153,7 @@ void commandLoop() {
             } else {
                 cout << "Map: " <<  mapstr << endl;
             }
-        } else if (command.compare("put") == 0) {
+        } else if (command.compare("find") == 0) {
             if (tokens.size() == 2) {
                 char *hostname = NULL;
                 unsigned int port = 0;
@@ -117,6 +177,10 @@ void commandLoop() {
             }
         } else {
             cerr << "[ERROR] Unrecognized command: " << cmd << endl;
+        }
+        
+        if (timeRun) {
+            cout << "Time: " << (getTimeInUSeconds() - startTime) << " microseconds" << endl;
         }
     } 
 }

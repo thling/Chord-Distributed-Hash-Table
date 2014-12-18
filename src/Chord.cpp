@@ -1,4 +1,5 @@
 #include <cerrno>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -28,8 +29,9 @@ using namespace std;
  * Please see SampleApp.cpp on how to use this simplified implementation.
  * 
  * The implementation follows the paper by Stocia et al [1], lacking the
- * failure detection and finger tables for performance optimization. The
- * simplified service will allow joining of new nodes, querying of new nodes,
+ * failure recovery/fault tolerant features.
+ * 
+ * The simplified service will allow joining of new nodes, querying of new nodes,
  * and printing the chord map on smaller networks. As per the specification,
  * the required "lookup" API will return the node responsible for the
  * key (the successor of key), and the application using the service is
@@ -56,7 +58,9 @@ Chord::Chord(unsigned int appPort, unsigned int chordPort, char *thisIpaddr) {
     
     pthread_mutex_init(&(this->successorResponseQueueMutex), NULL);
     pthread_mutex_init(&(this->chordMapResponseQueueMutex), NULL);
-    
+    pthread_mutex_init(&(this->sendTimerMutex), NULL);
+    pthread_mutex_init(&(this->fingerMutex), NULL);
+
     this->joinPointIp = NULL;
     this->state = ChordStatus::UNINITIALIZED;
 }
@@ -154,9 +158,10 @@ bool Chord::start() {
 }
 
 /**
- * Processes timers, typicaly send message timeouts.
+ * Processes jobs that require periodic operations
  */
-void Chord::processTimers() {
+void Chord::processPeriodicJobs() {
+    // Resend timed out messages
     pthread_mutex_lock(&(this->sendTimerMutex));
     for (map<uint32_t, msgTimer *>::iterator it = this->sendTimers.begin(); it != this->sendTimers.end(); ++it) {
         if (it->second->timestamp + SEND_TIMEOUT <= getTimeInUSeconds()) {
@@ -166,6 +171,36 @@ void Chord::processTimers() {
         }
     }
     pthread_mutex_unlock(&(this->sendTimerMutex));
+    
+    // Stabilize
+    this->stabilize();
+    
+    // Do the fingering
+    if (!this->successor->isSelf && this->lastFingerUpdateTimestamp + PERIODIC_JOBS_TIMEOUT * 2 <= getTimeInUSeconds()) {
+        pthread_mutex_lock(&(this->fingerMutex));
+        
+        for (unsigned int i = 0; i < CHORD_LENGTH_BIT; ++i) {
+            unsigned int searchTerm = pow(2, i);
+            if (UINT_MAX - searchTerm < this->hashedId) {
+                // May overflow the max UINT
+                searchTerm = this->hashedId - (UINT_MAX - searchTerm);
+            } else {
+                searchTerm = this->hashedId + searchTerm;
+            }
+            
+            if (this->isInSuccessor(searchTerm)) {
+                this->fingers[searchTerm] = this->successor;
+            } else {
+                SuccessorQuery *sq_finger = MessageHandler::createSuccessorQuery(searchTerm, this->appPort, this->ipaddr);
+                sq_finger->type = MTYPE_FINGER_QUERY;
+                
+                this->send(this->successor, MessageHandler::serialize(sq_finger), sq_finger->size);
+            }
+        }   
+        
+        pthread_mutex_unlock(&(this->fingerMutex));
+        this->lastFingerUpdateTimestamp = getTimeInUSeconds();
+    }
 }
 
 /**
@@ -173,12 +208,23 @@ void Chord::processTimers() {
  */
 void Chord::stabilize() {
     if (this->successor != NULL && 
-            this->lastStabilizedTimestamp + STABILIZE_TIMEOUT <= getTimeInUSeconds()) {
-        this->substate = ChordStatus::STABILIZING;
-        StabilizeRequest *streq = MessageHandler::createStabilizeRequest(this->appPort, this->ipaddr);
-        this->send(this->successor, MessageHandler::serialize(streq), streq->size);
-        this->lastStabilizedTimestamp
-                = getTimeInUSeconds() + STABILIZE_TIMEOUT - 200000;   // 200 ms to receive stablize response
+            this->lastStabilizedTimestamp + PERIODIC_JOBS_TIMEOUT <= getTimeInUSeconds()) {
+        if (this->successor->isSelf) {
+            // If my successor is myself, see if I have a predecessor yet. If so, it is my successor
+            if (this->predecessor != NULL) {
+                this->successor = this->predecessor;
+                this->lastStabilizedTimestamp = getTimeInUSeconds();
+            }
+        } else {
+            // Otherwise, send stabilize request
+            this->substate = ChordStatus::STABILIZING;
+            
+            StabilizeRequest *streq = MessageHandler::createStabilizeRequest(this->appPort, this->ipaddr);
+            
+            this->send(this->successor, MessageHandler::serialize(streq), streq->size);
+            this->lastStabilizedTimestamp
+                    = getTimeInUSeconds() + PERIODIC_JOBS_TIMEOUT - 200000;   // 200 ms to receive stablize response
+        }
     }
 }
 
@@ -191,8 +237,7 @@ void Chord::threadWorker() {
         int recvSize = 0;
         
         // Process timers
-        this->processTimers();
-        this->stabilize();
+        this->processPeriodicJobs();
         
         // Get new messages
         void *msg = this->receiveMessage(recvSize);
@@ -297,12 +342,10 @@ void Chord::threadWorker() {
                 if (strcmp(cmq->sender, this->ipaddr) == 0) {
                     // Query looped back to self
                     if (this->state == ChordStatus::MAPPING_CHORD) {
-                        // If I did not start the map query, might be a duplicate, discard
                         this->state = ChordStatus::MAPPING_COMPLETED;
-                    } else {
-                        // Ignore
-                        break;
                     }
+                    
+                    break;
                 }
                 
                 // Pass onto the successor with next sequence (used for tracking which one came first
@@ -340,6 +383,10 @@ void Chord::threadWorker() {
                 
                 break;
             }
+            case MTYPE_JOIN_SUCCESSOR_QUERY:
+                dprt << "New JoinSuccessorQuery";
+            case MTYPE_FINGER_QUERY:
+                dprt << "New FingerQuery";
             case MTYPE_SUCCESSOR_QUERY:
             {
                 dprt << "New SuccessorQuery";
@@ -353,10 +400,12 @@ void Chord::threadWorker() {
                             this->ipaddr
                     );
                     
-                    this->pushSuccessorResponse(sr);
-                } else if ((this->successor == NULL && this->predecessor == NULL)
-                        || (this->predecessor != NULL && sq->searchTerm < this->hashedId
-                                && this->hashedId < this->predecessor->hashedId)) {
+                    if (type == MTYPE_FINGER_QUERY) {
+                        this->fingers[sq->searchTerm] = createNode();
+                    } else {
+                        this->pushSuccessorResponse(sr);
+                    }
+                } else if (this->successor->isSelf) {
                     // If no successor and predecessor, this is a single node or first node in chord
                     SuccessorResponse *sr = MessageHandler::createSuccessorResponse(
                             sq->searchTerm,
@@ -364,18 +413,18 @@ void Chord::threadWorker() {
                             this->ipaddr
                     );
                     
-                    node *tmp = createNode(sq->sender);
-                    if (this->successor == NULL && this->predecessor == NULL) {
-                        this->successor = tmp;
-                        this->successor->appPort = sq->appPort;
+                    if (type == MTYPE_FINGER_QUERY) {
+                        sr->type = MTYPE_FINGER_RESPONSE;
                     }
                     
+                    node *tmp = createNode(sq->sender);
+                    this->successor = tmp;
+                    this->successor->appPort = sq->appPort;
                     this->send(tmp, MessageHandler::serialize(sr), sr->size);
                     
                     delete[] sr->responder;
                     delete sr;
-                } else if ((sq->searchTerm > this->hashedId && sq->searchTerm <= this->successor->hashedId)
-                        || (sq->searchTerm > this->hashedId && this->hashedId > this->successor->hashedId)) {
+                } else if (this->isInSuccessor(sq->searchTerm)) {
                     /*
                      * If ID satisfies successor requirement: > this id && <= successor id
                      * If ID > my id and, successor id < my id, then this is the last node clockwise in chord
@@ -386,25 +435,48 @@ void Chord::threadWorker() {
                             this->successor->appPort,
                             this->successor->ipaddr
                     );
- 
+                    
+                    if (type == MTYPE_FINGER_QUERY) {
+                        sr->type = MTYPE_FINGER_RESPONSE;
+                    }
+                    
                     this->send(this->createNode(sq->sender), MessageHandler::serialize(sr), sr->size);
                     
                     delete[] sr->responder;
                     delete sr;
                 } else {
                     // Forward the request to the successor
-                    this->send(this->successor, MessageHandler::serialize(sq), sq->size);
+                    if (type == MTYPE_SUCCESSOR_QUERY || type == MTYPE_JOIN_SUCCESSOR_QUERY) {
+                        if (type == MTYPE_JOIN_SUCCESSOR_QUERY) {
+                            this->send(this->getSuccessorOf(sq->searchTerm, false), MessageHandler::serialize(sq), sq->size);
+                        } else {
+                            this->send(this->getSuccessorOf(sq->searchTerm, true), MessageHandler::serialize(sq), sq->size);
+                        }
+                    }
                 }
                 
                 delete[] sq->sender;
                 delete sq;
                 break;
             }
+            case MTYPE_FINGER_RESPONSE:
             case MTYPE_SUCCESSOR_RESPONSE:
             {   
-                dprt << "New SuccessorResponse";
+                //dprt << "New SuccessorResponse";
                 SuccessorResponse *sr = (SuccessorResponse *) msg;
-                this->pushSuccessorResponse(sr);
+                
+                if (type == MTYPE_FINGER_RESPONSE) {
+                    pthread_mutex_lock(&(this->fingerMutex));
+                    this->fingers[sr->searchTerm] = createNode(sr->responder);
+                    this->fingers[sr->searchTerm]->appPort = sr->appPort;
+                    
+                    dprt << "Finger Response from " << fingers[sr->searchTerm]->hostname;
+                    
+                    pthread_mutex_unlock(&(this->fingerMutex));
+                } else {
+                    this->pushSuccessorResponse(sr);
+                }
+
                 break;
             }
             default:
@@ -430,17 +502,16 @@ char *Chord::query(char *key, char **hostip, unsigned int &hostport, unsigned in
         return NULL;
     }
     
-    if (this->successor == NULL) {
-        *hostip = NULL;
-        hostport = 0;
-        this->setErrorno(ERR_LOCAL_KEY);
-        return NULL;
+    if (this->successor == NULL || this->successor->isSelf) {
+        *hostip = new char[strlen(this->ipaddr) + 1];
+        strcpy(*hostip, this->ipaddr);
+        hostport = this->appPort;
+        return key;
     }
     
     // If this successor may have it
     unsigned int keyhash = this->getConsistentHash(key, strlen(key) + 1);
-    if ((keyhash > this->hashedId && keyhash <= this->successor->hashedId)
-            || (keyhash > this->hashedId && this->hashedId > this->successor->hashedId)) {
+    if (this->isInSuccessor(keyhash)) {
         *hostip = new char[strlen(this->successor->ipaddr) + 1];
         strcpy(*hostip, this->successor->ipaddr);
         hostport = this->successor->appPort;
@@ -449,14 +520,14 @@ char *Chord::query(char *key, char **hostip, unsigned int &hostport, unsigned in
         return key;
     }
     
+    node *sendto = this->getSuccessorOf(keyhash);
+    
     // If the successor does not have it, forward it to the successor and let him deal with it
     SuccessorQuery *sq = MessageHandler::createSuccessorQuery(keyhash, this->appPort, this->ipaddr);
     unsigned char *serialized = MessageHandler::serialize(sq);
     
-    this->send(this->successor, serialized, sq->size);
-    this->pushSendTimer(this->successor, keyhash, serialized, sq->size);
-    delete[] serialized;
-    delete sq;
+    this->send(sendto, serialized, sq->size);
+    this->pushSendTimer(sendto, keyhash, serialized, sq->size);
     
     // We deal with microseconds internally
     timeout = timeout * 1000;
@@ -473,17 +544,11 @@ char *Chord::query(char *key, char **hostip, unsigned int &hostport, unsigned in
         
         // If this is not for me, ignore
         if (sr->searchTerm == keyhash) {
-            if (strcmp(this->ipaddr, sr->responder) == 0) {
-                *hostip = NULL;
-                hostport = 0;
-                this->setErrorno(ERR_LOCAL_KEY);
-            } else {
-                *hostip = new char[strlen(sr->responder) + 1];
-                strcpy(*hostip, sr->responder);
-                hostport = sr->appPort;
-                
-                dprt << "Setting hostip to " << *hostip << " and port to " << hostport;
-            }
+            *hostip = new char[strlen(sr->responder) + 1];
+            strcpy(*hostip, sr->responder);
+            hostport = sr->appPort;
+            
+            dprt << "Setting hostip to " << *hostip << " and port to " << hostport;
             break;
         } else {
             usleep(100000);
@@ -501,6 +566,9 @@ char *Chord::query(char *key, char **hostip, unsigned int &hostport, unsigned in
         
         delete sr;
     }
+    
+    delete[] serialized;
+    delete sq;
     
     return key;
 }
@@ -606,10 +674,11 @@ bool Chord::join() {
     
     if (this->joinPointIp == NULL || strcmp(this->joinPointIp, this->ipaddr) == 0) {
         // If ipaddr == NULL or == self, create new Chord ring
-        // maybe don't have to handle this, check later
+        this->successor = this->createNode();
     } else {
         // Construct successor request
         SuccessorQuery *squery = MessageHandler::createSuccessorQuery(this->hashedId, this->appPort, this->ipaddr);
+        squery->type = MTYPE_JOIN_SUCCESSOR_QUERY;
         unsigned char *serializedData = MessageHandler::serialize(squery);
 
         // Create a node struct for sending, using the receiver's ipaddress
@@ -674,7 +743,7 @@ bool Chord::join() {
  * Notifies the successor of this node about the changing predecessor
  */
 void Chord::notifySuccessor() {
-    if (this->successor != NULL) {
+    if (this->successor != NULL && !this->successor->isSelf) {
         UpdatePredcessor *up = MessageHandler::createUpdatePredecessor(this->appPort, this->ipaddr);
         unsigned char *serialized = MessageHandler::serialize(up);
         
@@ -690,52 +759,83 @@ void Chord::notifySuccessor() {
  * @param   ipaddr  The IP address to create node structure for
  * @return  Pointer to node structure (node *) with the connection information for the IP
  */
-node *Chord::createNode(char *ipaddr = NULL) {
-    char *hostname;
+node *Chord::createNode(char *ipaddr) {
     if (ipaddr == NULL) {
         ipaddr = this->ipaddr;
-        dprt << "Warning: creating a node of self";
-    }
-    
-    // Obtain hostname for setting up UDP
-    hostname = getHostname(ipaddr);
-    
-    // Set up connection information
-    struct addrinfo hints, *res;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    
-    stringstream ss;
-    ss << this->chordPort;
-    
-    int ret = getaddrinfo(hostname, ss.str().c_str(), &hints, &res);
-    
-    if (ret != 0) {
-        cerr << "[ERROR] Cannot lookup " << hostname << ": " << gai_strerror(ret) << endl;
-        this->setErrorno(ERR_CANNOT_CONNECT);
-        return NULL;
-    }
-
-    int socket_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (socket_fd == -1) {
-        cerr << "[ERROR] Cannot setup socket to " << hostname << ": " << strerror(errno) << endl;
-        this->setErrorno(ERR_CANNOT_CONNECT);
-        return NULL;
     }
     
     // Creates a new node object
     node *n = new node();
+    char *hostname = getHostname(ipaddr);
     n->hashedId = this->getConsistentHash(ipaddr, strlen(ipaddr) + 1);
-    n->sfd = socket_fd;
-    n->addr = res->ai_addr;
-    n->len = res->ai_addrlen;
     n->ipaddr = new char[strlen(ipaddr) + 1];
     n->hostname = new char[strlen(hostname) + 1];
     strcpy(n->ipaddr, ipaddr);
     strcpy(n->hostname, hostname);
     
+    if (strcmp(ipaddr, this->ipaddr) == 0) {
+        // This node is myself
+        n->isSelf = true;
+        n->appPort = this->appPort;
+        n->sfd = 0;
+        n->addr = NULL;
+        n->len = 0;
+    } else {
+        // Not myself
+        n->isSelf = false;
+        n->appPort = 0;
+        
+        // Set up connection information
+        struct addrinfo hints, *res;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        
+        stringstream ss;
+        ss << this->chordPort;
+        
+        int ret = getaddrinfo(hostname, ss.str().c_str(), &hints, &res);
+        
+        if (ret != 0) {
+            cerr << "[ERROR] Cannot lookup " << hostname << ": " << gai_strerror(ret) << endl;
+            this->setErrorno(ERR_CANNOT_CONNECT);
+            return NULL;
+        }
+
+        int socket_fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (socket_fd == -1) {
+            cerr << "[ERROR] Cannot setup socket to " << hostname << ": " << strerror(errno) << endl;
+            this->setErrorno(ERR_CANNOT_CONNECT);
+            return NULL;
+        }
+        
+        n->sfd = socket_fd;
+        n->addr = res->ai_addr;
+        n->len = res->ai_addrlen;
+    }
+    
     return n;
+}
+
+/**
+ * Returns a text represented finger table, containing hashed ID and node name
+ * 
+ * @return  String containing the finger table entries
+ */
+char *Chord::getFingerTable() {
+    stringstream ss;
+    pthread_mutex_lock(&(this->fingerMutex));
+    for (map<uint32_t, node *>::iterator it = this->fingers.begin(); it != this->fingers.end(); ++it) {
+        if (it->second == NULL) {
+            ss << setw(10) << setfill(' ') << it->first << ": NULL\n";
+        } else {
+            ss << setw(10) << setfill(' ') << it->first << ": " << getComputerName(it->second->hostname)
+               << " # " << it->second->hashedId << "\n";
+        }
+    }
+    pthread_mutex_unlock(&(this->fingerMutex));
+    
+    return cstr(ss.str());
 }
 
 /**
@@ -749,7 +849,7 @@ char *Chord::getChordMap() {
         // If the service is not working, then there is no map
         this->setErrorno(ERR_NOT_IN_SERVICE);
         return NULL;
-    } else if (this->successor == NULL) {
+    } else if (this->successor == NULL || this->successor->isSelf) {
         this->setErrorno(ERR_NO_SUCCESSOR);
         return NULL;
     }
@@ -960,7 +1060,73 @@ void Chord::unsetSendTimer(uint32_t searchTerm) {
 }
 
 /**
+ * Calculates to see if key is within successor range for the next successor
+ * 
+ * @param   key     The key to check
+ * @param   start   Starting ID or hash value. Default is the Chord node's hash ID
+ * @param   end     Ending ID or hash value. Default is the hash ID of the successor
+ * @return  True if it is within the next successor, False otherwise
+ */
+bool Chord::isInSuccessor(uint32_t key, uint32_t start, uint32_t end) {
+    if (start == 0) {
+        start = this->hashedId;
+    }
+    
+    if (end == 0) {
+        end = this->successor->hashedId;
+    }
+    
+    if ((key > start && key <= end)
+            || (start > end && key <= end)
+            || (start > end && key > start)){
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Get the successor of key
+ * 
+ * @param   key         The key to get successor of
+ * @param   useFinger   Whether to use finger table or not. Default is true
+ * @return  The node pointer pointing to the successor node structure
+ */
+node *Chord::getSuccessorOf(uint32_t key, bool useFinger) {
+    if (!useFinger) {
+        return this->successor;
+    }
+    
+    node *ret = NULL;
+    map<uint32_t, node *>::reverse_iterator it;
+    
+    pthread_mutex_lock(&(this->fingerMutex));
+    for (it = this->fingers.rbegin(); it != this->fingers.rend(); ++it) {
+        if (it->second == NULL) {
+            continue;
+        }
+        
+        if (it->first < key) {
+            if ((--it) != this->fingers.rbegin()) {
+                ret = it->second;
+            }
+            
+            break;
+        }
+    }
+    pthread_mutex_unlock(&(this->fingerMutex));
+    
+    if (ret == NULL) {
+        ret = this->successor;
+    }
+
+    return ret;
+}
+
+/**
  * Returns the current state of the service
+ * 
+ * @return  ChordStatus::status indicating the Chord system state
  */
 ChordStatus::status Chord::getState() {
     return this->state;

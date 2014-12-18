@@ -26,6 +26,3 @@ s2: sample
 
 clean:
 	rm -rf *.o *~ src/*~ include/*~ include/*.hpp.gch $(EXECS) $(OBJS)
-	
-cleanall: clean
-	rm -rf *_store/

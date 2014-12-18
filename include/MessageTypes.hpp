@@ -4,13 +4,16 @@
 #include <stdint.h>
 
 const uint32_t MTYPE_SUCCESSOR_QUERY = 1;
-const uint32_t MTYPE_SUCCESSOR_RESPONSE = 2;
-const uint32_t MTYPE_CHORD_MAP_QUERY = 3;
-const uint32_t MTYPE_CHORD_MAP_RESPONSE = 4;
-const uint32_t MTYPE_UPDATE_PREDECESSOR = 5;
-const uint32_t MTYPE_UPDATE_PREDECESSOR_ACK = 6;
-const uint32_t MTYPE_STABILIZE_REQUEST = 7;
-const uint32_t MTYPE_STABILIZE_RESPONSE = 8;
+const uint32_t MTYPE_JOIN_SUCCESSOR_QUERY = 2;
+const uint32_t MTYPE_SUCCESSOR_RESPONSE = 3;
+const uint32_t MTYPE_CHORD_MAP_QUERY = 4;
+const uint32_t MTYPE_CHORD_MAP_RESPONSE = 5;
+const uint32_t MTYPE_UPDATE_PREDECESSOR = 6;
+const uint32_t MTYPE_UPDATE_PREDECESSOR_ACK = 7;
+const uint32_t MTYPE_STABILIZE_REQUEST = 8;
+const uint32_t MTYPE_STABILIZE_RESPONSE = 9;
+const uint32_t MTYPE_FINGER_QUERY = 10;
+const uint32_t MTYPE_FINGER_RESPONSE = 11;
 
 /**
  * Base message type (wrapper)
@@ -50,11 +53,6 @@ typedef struct {
     char *predecessor;
 } StabilizeResponse;
 
-/**
- * Type = MTYPE_SUCCESSOR_QUERY
- * 
- * successor = NULL if a query; otherwise response
- */
 typedef struct {
     uint32_t type;
     uint32_t size;
