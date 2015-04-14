@@ -1,15 +1,9 @@
-##CS 536 | Final Project
-####Tzu Hsuan (Sam) Ling - ling21@purdue.edu
+## Simplified Chord Distributed Hash Table
+#### Tzu Hsuan (Sam) Ling - ling21@purdue.edu
 
 -----------------------------------------------------------------------------------
-
-*Using a markdown viewer to view this file is recommended
-(there is a free online viewer at http://markable.in/editor/)*
-
-*The repository is available on https://bitbucket.org/thling/cs-536-final-project*
-
 The package provides a sample application to test the Chord service, the 
-SampleApp.cpp. It is a simple two-threaded application that provides a command
+<code>SampleApp.cpp</code>. It is a simple two-threaded application that provides a command
 line interface (see supported command below). The functions demonstrates
 how the service library works. In addition, the library itself is also
 documented with great detail.
@@ -22,7 +16,7 @@ documented with great detail.
 * `make s1` will call sample application in a way that it spawns a new Chord ring
 * `make s2` will call sample application in a way that it joins the link made by `make s1`
 * `make clean` to clean the directory of unnecessary object files and executables
-* To execute after compile, use command `./sample -c CHORD_PORT -p APP_PORT [-j IP_ADDRESS_TO_JOIN]
+* To execute after compile, use command `./sample -c CHORD_PORT -p APP_PORT [-j IP_ADDRESS_TO_JOIN]`
 
 ###Implementation & Design Choices###
 
@@ -71,4 +65,3 @@ These are supported in the sample app to provide best view on the functionalitie
 	* Provides abstract layer for object-oriented threading
 * `include/Utils.hpp`
 	* Provides utility functions for general use
-    
