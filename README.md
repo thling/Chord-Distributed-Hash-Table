@@ -2,11 +2,9 @@
 #### Tzu Hsuan (Sam) Ling - ling21@purdue.edu
 
 -----------------------------------------------------------------------------------
-The package provides a sample application to test the Chord service, the 
-<code>SampleApp.cpp</code>. It is a simple two-threaded application that provides a command
-line interface (see supported command below). The functions demonstrates
-how the service library works. In addition, the library itself is also
-documented with great detail.
+
+The package provides a sample application to test the Chord service, the <code>SampleApp.cpp</code>. It is a simple two-threaded application that provides a command line interface (see supported command below). The functions demonstrates how the service library works. In addition, the library itself is also documented with great detail.
+
 -----------------------------------------------------------------------------------
 
 ###Compile & Execute###
